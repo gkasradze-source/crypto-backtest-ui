@@ -1,0 +1,7 @@
+streamlit
+ccxt
+pandas
+numpy
+pytz
+python-dateutil
+matplotlib
