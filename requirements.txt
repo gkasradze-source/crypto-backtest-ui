@@ -1,7 +1,7 @@
-streamlit
-ccxt
-pandas
-numpy
-pytz
-python-dateutil
-matplotlib
+streamlit==1.40.2
+ccxt==4.4.62
+pandas==2.2.2
+numpy==1.26.4
+pytz==2024.1
+python-dateutil==2.9.0.post0
+matplotlib==3.8.4
