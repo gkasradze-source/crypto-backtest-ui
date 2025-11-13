@@ -134,15 +134,27 @@ def backtest_asset(df: pd.DataFrame,
     trade_durations = []
 
     for ts, row in df_h.iterrows():
-        if in_position and qty > 0:
-            equity_curve.append(qty * row['close'])
-        else:
-            equity_curve.append(capital)
-        equity_time.append(ts)
+    # Mark-to-market equity
+    if in_position and qty > 0:
+        equity_curve.append(qty * row['close'])
+    else:
+        equity_curve.append(capital)
+    equity_time.append(ts)
 
-        if ts in ref_idx and not in_position:
-            ref_price = row['close']
-            active_buy_limit = ref_price * (1.0 - buy_off)
+    # Convert this candle's time to local Tbilisi time (or whatever tz_str is)
+    ts_local = ts.tz_convert(tz_str)
+
+    is_reference_bar = (
+        ts_local.weekday() == weekday and
+        ts_local.hour == ref_hour and
+        ts_local.minute == ref_minute
+    )
+
+    # Place/refresh buy at reference bar
+    if is_reference_bar and not in_position:
+        ref_price = row['close']
+        active_buy_limit = ref_price * (1.0 - buy_off)
+
 
         if active_buy_limit is not None and not in_position:
             if row['low'] <= active_buy_limit:
