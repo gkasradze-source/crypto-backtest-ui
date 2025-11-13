@@ -245,8 +245,11 @@ with st.sidebar:
     weekday = st.selectbox("Weekday (Mon=0 ... Sun=6)", options=list(range(7)), index=4)
 
     default_horizons = ["1y", "2y", "3y", "5y"]
-    horizons_selected = st.multiselect("Horizons (years 'y' or months 'm')", default_horizons,
-                                       options=["6m","9m","12m","18m","24m","36m","48m","60m","1y","2y","3y","5y"])
+    horizons_selected = horizons_selected = st.multiselect(
+    "Horizons (years 'y' or months 'm')",
+    options=["6m","9m","12m","18m","24m","36m","48m","60m","1y","2y","3y","5y"],
+    default=default_horizons,
+)
 
     priority = st.multiselect("Exchange priority", options=["binance", "coinbase"], default=["binance","coinbase"])
 
