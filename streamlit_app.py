@@ -3,11 +3,10 @@ import io
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import numpy as np
 import pandas as pd
-import pytz
 import streamlit as st
 from dateutil.relativedelta import relativedelta
 import matplotlib.pyplot as plt
@@ -50,11 +49,11 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def parse_horizons(tokens: List[str]) -> List[Tuple[str, relativedelta]]:
+def parse_trailing_tokens(tokens: List[str]) -> List[Tuple[str, relativedelta]]:
     """
     Parse tokens like "1y", "2y", "12m", "18m" into (label, relativedelta).
     """
-    out = []
+    out: List[Tuple[str, relativedelta]] = []
     for tok in tokens:
         tok = tok.strip()
         if not tok:
@@ -66,7 +65,7 @@ def parse_horizons(tokens: List[str]) -> List[Tuple[str, relativedelta]]:
             months = int(tok[:-1])
             out.append((tok, relativedelta(months=months)))
         else:
-            raise ValueError(f"Invalid horizon token '{tok}'. Use e.g. 1y, 2y, 12m, 18m.")
+            raise ValueError(f"Invalid trailing token '{tok}'. Use e.g. 1y, 2y, 12m, 18m.")
     return out
 
 
@@ -117,9 +116,7 @@ def compute_max_drawdown(equity_curve: pd.Series) -> float:
 
 
 def get_clients():
-    """
-    Return Binance + Coinbase clients with rate limit enabled.
-    """
+    """Return Binance + Coinbase clients with rate limit enabled."""
     return ccxt.binance({"enableRateLimit": True}), ccxt.coinbase({"enableRateLimit": True})
 
 
@@ -154,6 +151,37 @@ def fetch_hourly_for_asset(
     return pd.DataFrame()
 
 
+def build_horizon_specs(
+    calendar_years: List[int],
+    trailing_tokens: List[str],
+    end_dt_utc: datetime,
+) -> List[Dict]:
+    """
+    Build a list of horizon specifications:
+    - calendar years: full Jan 1 – Jan 1 ranges
+    - trailing tokens: ending at end_dt_utc
+    Returns list of dicts: {label, start_utc, end_utc}
+    """
+    specs: List[Dict] = []
+
+    # Calendar years (full years)
+    for year in sorted(calendar_years):
+        start_utc = datetime(year, 1, 1, tzinfo=timezone.utc)
+        end_utc = datetime(year + 1, 1, 1, tzinfo=timezone.utc)  # exclusive
+        label = f"Year {year}"
+        specs.append({"label": label, "start_utc": start_utc, "end_utc": end_utc})
+
+    # Trailing horizons
+    trailing = parse_trailing_tokens(trailing_tokens)
+    for token, rd in trailing:
+        start_utc = end_dt_utc - rd
+        end_utc = end_dt_utc  # exclusive in filtering (< end_utc)
+        label = f"Trailing {token}"
+        specs.append({"label": label, "start_utc": start_utc, "end_utc": end_utc})
+
+    return specs
+
+
 # --------------------------------------------------------------------------------------
 # Backtest core
 # --------------------------------------------------------------------------------------
@@ -186,8 +214,8 @@ def backtest_asset(
     - Only one position at a time.
     """
 
-    # Restrict data to horizon window
-    df_h = df[(df.index >= start_utc) & (df.index <= end_utc)].copy()
+    # Restrict data to horizon window (end_utc is exclusive)
+    df_h = df[(df.index >= start_utc) & (df.index < end_utc)].copy()
     if df_h.empty:
         return None, None
 
@@ -246,7 +274,6 @@ def backtest_asset(
                 trade_entry_ts = ts
                 tp_price = buy_price * (1.0 + tp_up)
                 fills += 1
-                # After fill, limit consumed
                 active_buy_limit = None
 
         # If in position, check if TP is hit
@@ -262,7 +289,6 @@ def backtest_asset(
                 tp_hits += 1
                 if tp_price > buy_price:
                     wins += 1
-                # Trade duration in days
                 if trade_entry_ts is not None:
                     trade_durations.append(
                         (ts - trade_entry_ts).total_seconds() / 86400.0
@@ -393,48 +419,41 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Horizons")
 
-    st.caption("Choose preset horizons and optionally add extra trailing periods in months/years.")
+    # Calendar years section
+    now = utc_now()
+    current_year = now.year
 
-    preset_options = [
-        "6m", "9m", "12m", "18m", "24m", "36m", "48m", "60m",
-        "1y", "2y", "3y", "5y"
-    ]
-    preset_default = ["12m", "3y", "5y"]
-
-    preset_selected = st.multiselect(
-        "Preset horizons (months 'm' and years 'y')",
-        options=preset_options,
-        default=preset_default,
+    max_years_back = st.slider(
+        "Show calendar years back (full years only)",
+        min_value=1,
+        max_value=15,
+        value=5,
+        help="You can then pick which exact calendar years to backtest.",
     )
 
-    st.markdown("**Extra trailing horizons (optional)**")
-    c_y, c_m = st.columns(2)
-    extra_years = c_y.number_input(
-        "Extra trailing years",
-        min_value=0,
-        max_value=20,
-        value=0,
-        step=1,
+    years_available = list(range(current_year - 1, current_year - max_years_back - 1, -1))
+    year_labels = [str(y) for y in years_available]
+
+    calendar_selected_labels = st.multiselect(
+        "Calendar years (Jan 1 – Dec 31)",
+        options=year_labels,
+        default=year_labels[:3],
     )
-    extra_months = c_m.number_input(
-        "Extra trailing months",
-        min_value=0,
-        max_value=240,
-        value=0,
-        step=1,
+    calendar_selected = [int(y) for y in calendar_selected_labels]
+
+    st.markdown("**Trailing periods (separate from calendar years)**")
+    trailing_options = ["3m", "6m", "9m", "12m", "18m", "24m", "36m", "48m", "60m"]
+    trailing_default = ["12m", "24m", "36m"]
+    trailing_selected = st.multiselect(
+        "Trailing horizons (months 'm' and years 'y')",
+        options=trailing_options,
+        default=trailing_default,
     )
 
-    extra_tokens = []
-    if extra_years > 0:
-        extra_tokens.append(f"{int(extra_years)}y")
-    if extra_months > 0:
-        extra_tokens.append(f"{int(extra_months)}m")
-
-    # combine while preserving order and uniqueness
-    horizons_selected = []
-    for tok in preset_selected + extra_tokens:
-        if tok not in horizons_selected:
-            horizons_selected.append(tok)
+    st.caption(
+        "You can select multiple calendar years AND multiple trailing periods. "
+        "Each will be backtested separately."
+    )
 
     st.markdown("---")
     st.subheader("Exchanges")
@@ -473,19 +492,20 @@ with st.sidebar:
 
 if run_btn:
     try:
-        # Parse horizons
-        horizons = parse_horizons(horizons_selected)
-        if not horizons:
-            st.error("Please select at least one valid horizon (e.g., 12m, 3y, 5y).")
+        if not calendar_selected and not trailing_selected:
+            st.error("Please select at least one calendar year or one trailing period.")
             st.stop()
 
         end_dt_utc = utc_now()
-        # Find maximum horizon to define earliest needed start
-        max_rd = max(
-            (rd for (_, rd) in horizons),
-            key=lambda r: (r.years, r.months, r.days, r.hours),
+
+        # Build detailed horizon specs
+        horizon_specs = build_horizon_specs(
+            calendar_years=calendar_selected,
+            trailing_tokens=trailing_selected,
+            end_dt_utc=end_dt_utc,
         )
-        earliest_start = end_dt_utc - max_rd
+
+        earliest_start = min(spec["start_utc"] for spec in horizon_specs)
 
         # Build asset list
         assets = []
@@ -502,7 +522,7 @@ if run_btn:
 
         st.info("Fetching hourly data (Binance first, Coinbase fallback)...")
 
-        all_rows = []
+        all_rows: List[Dict] = []
         tabs = st.tabs([a["label"] for a in assets])
 
         for idx, a in enumerate(assets):
@@ -528,14 +548,16 @@ if run_btn:
                 )
 
                 res_rows = []
-                for (hlabel, rd) in horizons:
-                    start_utc = end_dt_utc - rd
+                for spec in horizon_specs:
+                    hlabel = spec["label"]
+                    start_utc = spec["start_utc"]
+                    end_utc = spec["end_utc"]
 
                     tr, fig = backtest_asset(
                         df=df_asset,
                         asset_label=a["label"],
                         start_utc=start_utc,
-                        end_utc=end_dt_utc,
+                        end_utc=end_utc,
                         horizon_label=hlabel,
                         buy_off=buy_off_pct / 100.0,
                         tp_up=tp_up_pct / 100.0,
@@ -580,7 +602,7 @@ if run_btn:
                     st.subheader(f"Results — {a['label']}")
                     st.dataframe(df_res, use_container_width=True)
 
-                    # Debug / diagnostics: reference bars vs fills vs TP hits
+                    # Diagnostics: reference bars vs fills vs TP hits
                     st.markdown("**Diagnostics** (per horizon):")
                     st.dataframe(
                         df_res[["horizon", "ref_bars", "fills", "tp_hits"]],
@@ -618,10 +640,10 @@ else:
         """
 Set your parameters in the sidebar and click **🚀 Run Backtest**.
 
-**Default assumptions:**
-- Timezone: `Asia/Tbilisi`
-- Reference bar: **Friday 12:00 local time**
-- Strategy: buy X% below that bar's close, sell at +Y%.
-- Data: hourly from Binance/Coinbase via ccxt.
+**Horizons:**
+- *Calendar years* → pick full years like 2020, 2021, 2022 (Jan 1 – Dec 31).
+- *Trailing periods* → pick trailing 3m, 6m, 1y, 2y, 3y, 5y, etc.
+
+Your Friday dip-buy strategy is then run **separately** on each selected horizon.
 """
     )
