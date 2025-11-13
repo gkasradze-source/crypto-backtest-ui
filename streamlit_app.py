@@ -52,7 +52,7 @@ def utc_now() -> datetime:
 
 def parse_horizons(tokens: List[str]) -> List[Tuple[str, relativedelta]]:
     """
-    Parse "12m", "1y", etc. into (label, relativedelta) list.
+    Parse tokens like "1y", "2y", "12m", "18m" into (label, relativedelta).
     """
     out = []
     for tok in tokens:
@@ -66,7 +66,7 @@ def parse_horizons(tokens: List[str]) -> List[Tuple[str, relativedelta]]:
             months = int(tok[:-1])
             out.append((tok, relativedelta(months=months)))
         else:
-            raise ValueError(f"Invalid horizon token '{tok}'. Use 1y, 24m, etc.")
+            raise ValueError(f"Invalid horizon token '{tok}'. Use e.g. 1y, 2y, 12m, 18m.")
     return out
 
 
@@ -272,7 +272,6 @@ def backtest_asset(
 
     # If still in position at end, mark to market but no TP hit
     if in_position and qty > 0:
-        # mark value but do not count as win
         last_close = df_h.iloc[-1]["close"]
         capital = qty * last_close * (1.0 - fee_rate)  # assume fee to close at end
         trade_count += 1
@@ -394,12 +393,48 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Horizons")
 
-    default_horizons = ["1y", "2y", "3y", "5y"]
-    horizons_selected = st.multiselect(
-        "Horizons (years 'y' or months 'm')",
-        options=["6m", "9m", "12m", "18m", "24m", "36m", "48m", "60m", "1y", "2y", "3y", "5y"],
-        default=default_horizons,
+    st.caption("Choose preset horizons and optionally add extra trailing periods in months/years.")
+
+    preset_options = [
+        "6m", "9m", "12m", "18m", "24m", "36m", "48m", "60m",
+        "1y", "2y", "3y", "5y"
+    ]
+    preset_default = ["12m", "3y", "5y"]
+
+    preset_selected = st.multiselect(
+        "Preset horizons (months 'm' and years 'y')",
+        options=preset_options,
+        default=preset_default,
     )
+
+    st.markdown("**Extra trailing horizons (optional)**")
+    c_y, c_m = st.columns(2)
+    extra_years = c_y.number_input(
+        "Extra trailing years",
+        min_value=0,
+        max_value=20,
+        value=0,
+        step=1,
+    )
+    extra_months = c_m.number_input(
+        "Extra trailing months",
+        min_value=0,
+        max_value=240,
+        value=0,
+        step=1,
+    )
+
+    extra_tokens = []
+    if extra_years > 0:
+        extra_tokens.append(f"{int(extra_years)}y")
+    if extra_months > 0:
+        extra_tokens.append(f"{int(extra_months)}m")
+
+    # combine while preserving order and uniqueness
+    horizons_selected = []
+    for tok in preset_selected + extra_tokens:
+        if tok not in horizons_selected:
+            horizons_selected.append(tok)
 
     st.markdown("---")
     st.subheader("Exchanges")
@@ -441,7 +476,7 @@ if run_btn:
         # Parse horizons
         horizons = parse_horizons(horizons_selected)
         if not horizons:
-            st.error("Please select at least one valid horizon (e.g., 12m, 1y, 2y, ...).")
+            st.error("Please select at least one valid horizon (e.g., 12m, 3y, 5y).")
             st.stop()
 
         end_dt_utc = utc_now()
